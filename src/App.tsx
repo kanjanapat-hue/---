@@ -40,6 +40,14 @@ import { AdminLedgerView } from './components/AdminLedgerView';
 import { RequisitionPrintForm } from './components/RequisitionPrintForm';
 import { LoginModal } from './components/LoginModal';
 import { RightControlPanel } from './components/RightControlPanel';
+import { GuestWelcomeView } from './components/GuestWelcomeView';
+import {
+  SUPER_ADMIN_PROFILE,
+  DEMO_USER_PROFILE,
+  checkIsAdmin,
+  logoutMsuAccount,
+  saveRecentMsuAccount
+} from './services/auth';
 import { playNotificationChime } from './utils/notificationSound';
 import {
   LayoutDashboard,
@@ -64,7 +72,8 @@ import {
   X,
   AlertTriangle,
   Sparkles,
-  SlidersHorizontal
+  SlidersHorizontal,
+  ChevronDown
 } from 'lucide-react';
 
 export default function App() {
@@ -110,19 +119,26 @@ export default function App() {
   // User Authentication State
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
     const saved = localStorage.getItem('copag_user');
-    if (saved) return JSON.parse(saved);
-    // Default initial user from environment
-    return {
-      email: 'kanjanapat.m@msu.ac.th',
-      name: 'กาญจนภาษณ์ มาตบุรม',
-      role: 'admin',
-      department: 'งานบริการการศึกษาและพัฒนาคุณภาพนิสิต',
-      position: 'นักวิชาการศึกษา',
-      avatar: 'https://api.dicebear.com/7.x/initials/svg?seed=kanjanapat'
-    };
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.email) {
+          // Strictly enforce admin role for kanjanapat.m@msu.ac.th
+          if (checkIsAdmin(parsed.email)) {
+            parsed.role = 'admin';
+          }
+          return parsed;
+        }
+      } catch (err) {
+        console.warn('Failed to parse saved user:', err);
+      }
+    }
+    // Default initial user: kanjanapat.m@msu.ac.th as Super Admin
+    return SUPER_ADMIN_PROFILE;
   });
 
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const [activeTab, setActiveTab] = useState<'requisition' | 'dashboard' | 'requisitions' | 'stockout' | 'stockin' | 'inventory' | 'ledger'>('requisition');
   const [ledgerTargetMaterialId, setLedgerTargetMaterialId] = useState<string | undefined>(undefined);
   const [currentViewingOrder, setCurrentViewingOrder] = useState<RequisitionOrder | null>(null);
@@ -160,17 +176,41 @@ export default function App() {
     });
   };
 
+  // Login handler
+  const handleLogin = (user: UserProfile) => {
+    if (checkIsAdmin(user.email)) {
+      user.role = 'admin';
+    }
+    setCurrentUser(user);
+    saveRecentMsuAccount(user);
+    setShowLoginModal(false);
+    setShowUserMenu(false);
+    playNotificationChime();
+    setToastMessage({
+      type: 'success',
+      title: 'เข้าสู่ระบบสำเร็จ',
+      desc: `ยินดีต้อนรับ ${user.name} (${user.role === 'admin' ? '🛡️ แอดมินเจ้าหน้าที่พัสดุ' : '👤 ผู้ขอเบิก'}) เข้าสู่ระบบ มมส.`
+    });
+  };
+
+  // Logout handler
+  const handleLogout = async () => {
+    await logoutMsuAccount();
+    setCurrentUser(null);
+    setShowUserMenu(false);
+    setShowLoginModal(false);
+    setCurrentViewingOrder(null);
+    playNotificationChime();
+    setToastMessage({
+      type: 'info',
+      title: 'ออกจากระบบสำเร็จ',
+      desc: 'คุณได้ออกจากระบบเรียบร้อยแล้ว ข้อมูลทั้งหมดได้รับการบันทึกบนคลาวด์'
+    });
+  };
+
   const handleToggleRole = () => {
     if (currentUser?.role === 'admin') {
-      const userAccount: UserProfile = {
-        email: 'somchai.p@msu.ac.th',
-        name: 'ดร.สมชาย ปรีชาชาญ',
-        role: 'user',
-        department: 'สาขาวิชารัฐประศาสนศาสตร์',
-        position: 'อาจารย์ประจำสาขาวิชา',
-        avatar: 'https://api.dicebear.com/7.x/initials/svg?seed=somchai'
-      };
-      setCurrentUser(userAccount);
+      setCurrentUser(DEMO_USER_PROFILE);
       setCurrentViewingOrder(null);
       setActiveTab('requisition');
       setToastMessage({
@@ -179,15 +219,7 @@ export default function App() {
         desc: 'ท่านอยู่ในบัญชี ดร.สมชาย ปรีชาชาญ สามารถคีย์รายการขอเบิกพัสดุและดูประวัติของตนเองได้'
       });
     } else {
-      const adminAccount: UserProfile = {
-        email: 'kanjanapat.m@msu.ac.th',
-        name: 'กาญจนภาษณ์ มาตบุรม',
-        role: 'admin',
-        department: 'งานบริการการศึกษาและพัฒนาคุณภาพนิสิต',
-        position: 'นักวิชาการศึกษา',
-        avatar: 'https://api.dicebear.com/7.x/initials/svg?seed=kanjanapat'
-      };
-      setCurrentUser(adminAccount);
+      setCurrentUser(SUPER_ADMIN_PROFILE);
       setCurrentViewingOrder(null);
       setActiveTab('requisitions');
       setToastMessage({
@@ -1457,37 +1489,128 @@ export default function App() {
                 </div>
               )}
 
-              {/* User Profile avatar */}
+              {/* User Profile & Menu */}
               {currentUser ? (
-                <div className="flex items-center gap-2">
-                  <div className="hidden md:block text-right">
-                    <p className="text-xs font-bold text-slate-800 leading-tight">
-                      {currentUser.name}
-                    </p>
-                    <span className="text-[10px] text-slate-500">
-                      {currentUser.role === 'admin' ? '🛡️ แอดมิน' : '👤 ผู้ใช้'} • {currentUser.email}
-                    </span>
-                  </div>
+                <div className="relative">
                   <button
-                    id="btn-switch-account"
-                    onClick={() => setShowLoginModal(true)}
-                    title="คลิกเพื่อดูโปรไฟล์หรือเปลี่ยนผู้ใช้งาน"
-                    className="p-1 rounded-lg hover:bg-slate-100 text-slate-600 cursor-pointer border border-transparent hover:border-slate-200 transition-colors"
+                    id="btn-user-profile-menu"
+                    onClick={() => setShowUserMenu(prev => !prev)}
+                    className="flex items-center gap-2 p-1.5 rounded-xl hover:bg-slate-100 transition-all border border-transparent hover:border-slate-200 cursor-pointer"
                   >
+                    <div className="hidden md:block text-right">
+                      <p className="text-xs font-bold text-slate-800 leading-tight">
+                        {currentUser.name}
+                      </p>
+                      <span className="text-[10px] text-slate-500 flex items-center justify-end gap-1">
+                        {currentUser.email.toLowerCase() === 'kanjanapat.m@msu.ac.th' ? (
+                          <span className="text-amber-700 font-bold">🛡️ แอดมิน (Super Admin)</span>
+                        ) : currentUser.role === 'admin' ? (
+                          <span className="text-amber-700 font-medium">🛡️ เจ้าหน้าที่พัสดุ</span>
+                        ) : (
+                          <span className="text-blue-600 font-medium">👤 ผู้ขอเบิก</span>
+                        )}
+                      </span>
+                    </div>
                     <img
                       src={currentUser.avatar}
                       alt={currentUser.name}
-                      className="w-8 h-8 rounded-full border border-slate-200 bg-slate-50"
+                      className="w-8 h-8 rounded-full border border-slate-200 bg-slate-50 ring-1 ring-slate-100"
                     />
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
                   </button>
+
+                  {/* User Dropdown Menu */}
+                  {showUserMenu && (
+                    <div className="absolute right-0 mt-2 w-72 bg-white rounded-2xl shadow-xl border border-slate-200 p-3 z-50 text-xs animate-in fade-in slide-in-from-top-2 duration-150">
+                      {/* User Info Card */}
+                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-2">
+                        <div className="flex items-center gap-2.5">
+                          <img
+                            src={currentUser.avatar}
+                            alt={currentUser.name}
+                            className="w-10 h-10 rounded-full border border-slate-200 bg-white shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 text-sm truncate">
+                              {currentUser.name}
+                            </p>
+                            <p className="text-[11px] text-slate-500 truncate">
+                              {currentUser.position || 'บุคลากร มมส.'}
+                            </p>
+                            <p className="text-[10px] font-mono text-amber-800 font-semibold truncate">
+                              {currentUser.email}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="pt-1 border-t border-slate-200/60 flex items-center justify-between text-[11px]">
+                          <span className="text-slate-500">สิทธิ์ในระบบ:</span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                              currentUser.role === 'admin'
+                                ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                : 'bg-blue-100 text-blue-900 border border-blue-200'
+                            }`}
+                          >
+                            {currentUser.email.toLowerCase() === 'kanjanapat.m@msu.ac.th'
+                              ? '🛡️ แอดมิน (Super Admin)'
+                              : currentUser.role === 'admin'
+                              ? '🛡️ เจ้าหน้าที่พัสดุ'
+                              : '👤 ผู้ขอเบิก'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Dropdown Actions */}
+                      <div className="mt-2 space-y-1">
+                        <button
+                          onClick={() => {
+                            setShowUserMenu(false);
+                            handleToggleRole();
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 hover:bg-slate-50 hover:text-amber-800 transition-colors cursor-pointer font-medium"
+                        >
+                          <Shield className="w-4 h-4 text-amber-600" />
+                          <span>สลับบทบาท (ผู้ขอเบิก ↔ แอดมิน)</span>
+                        </button>
+
+                        <button
+                          id="btn-dropdown-switch-account"
+                          onClick={() => {
+                            setShowUserMenu(false);
+                            setShowLoginModal(true);
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 hover:bg-slate-50 hover:text-amber-800 transition-colors cursor-pointer font-medium"
+                        >
+                          <User className="w-4 h-4 text-blue-600" />
+                          <span>เปลี่ยนบัญชี มมส. (@msu.ac.th)</span>
+                        </button>
+
+                        <div className="border-t border-slate-100 my-1" />
+
+                        <button
+                          id="btn-dropdown-logout"
+                          onClick={() => {
+                            setShowUserMenu(false);
+                            handleLogout();
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-red-600 hover:bg-red-50 hover:text-red-700 transition-colors cursor-pointer font-bold"
+                        >
+                          <LogOut className="w-4 h-4 text-red-500" />
+                          <span>ออกจากระบบ (Logout)</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <button
                   id="btn-open-login"
                   onClick={() => setShowLoginModal(true)}
-                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                  className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
                 >
-                  เข้าสู่ระบบ @msu.ac.th
+                  <User className="w-3.5 h-3.5" />
+                  <span>เข้าสู่ระบบ @msu.ac.th</span>
                 </button>
               )}
             </div>
@@ -1527,110 +1650,148 @@ export default function App() {
       <div className="flex-1 flex flex-col lg:flex-row w-full min-h-0 relative">
         {/* Main Content Area */}
         <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
-          {/* If user is currently looking at a generated Requisition Form for print / PDF */}
-        {currentViewingOrder ? (
-          <RequisitionPrintForm
-            order={currentViewingOrder}
-            onBack={() => setCurrentViewingOrder(null)}
-            accessToken={currentUser?.accessToken}
-            onDriveSaved={handleDriveSaved}
-          />
-        ) : (
-          <>
-            {activeTab === 'requisition' && currentUser && (
-              <UserRequisitionView
-                materials={materials}
-                user={currentUser}
-                orders={orders}
-                onSubmitOrder={handleSubmitRequisition}
-                onViewPrintForm={order => setCurrentViewingOrder(order)}
-                onCancelOrder={handleCancelUserOrder}
-                onEditOrder={handleUpdateRequisition}
-              />
-            )}
+          {!currentUser ? (
+            /* Logged-out / Guest State */
+            <GuestWelcomeView
+              onLoginProfile={handleLogin}
+              onOpenLoginModal={() => setShowLoginModal(true)}
+              materialsCount={materials.length}
+            />
+          ) : currentViewingOrder ? (
+            /* If user is currently looking at a generated Requisition Form for print / PDF */
+            <RequisitionPrintForm
+              order={currentViewingOrder}
+              onBack={() => setCurrentViewingOrder(null)}
+              accessToken={currentUser?.accessToken}
+              onDriveSaved={handleDriveSaved}
+            />
+          ) : (
+            <>
+              {/* Access restriction notice if regular user attempts to access admin tabs */}
+              {currentUser.role !== 'admin' && activeTab !== 'requisition' && (
+                <div className="bg-white rounded-2xl border border-amber-200 p-8 text-center max-w-md mx-auto my-12 space-y-4 shadow-sm animate-in fade-in duration-200">
+                  <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center mx-auto text-amber-700 border border-amber-200">
+                    <Shield className="w-6 h-6" />
+                  </div>
+                  <h3 className="font-bold text-slate-900 text-base">
+                    หน้านี้สงวนสิทธิ์เฉพาะเจ้าหน้าที่พัสดุ (แอดมิน)
+                  </h3>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    ท่านกำลังเข้าใช้งานด้วยบัญชีผู้ขอเบิก หากต้องการเข้าถึงระบบจัดการคลัง กรุณาเข้าสู่ระบบด้วยบัญชีแอดมิน (kanjanapat.m@msu.ac.th)
+                  </p>
+                  <div className="pt-2 flex flex-col gap-2">
+                    <button
+                      onClick={() => {
+                        handleLogin(SUPER_ADMIN_PROFILE);
+                      }}
+                      className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-xs"
+                    >
+                      เข้าสู่ระบบในฐานะ kanjanapat.m@msu.ac.th (แอดมิน)
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('requisition')}
+                      className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-medium transition-colors cursor-pointer"
+                    >
+                      กลับสู่หน้าคีย์ขอเบิกพัสดุ
+                    </button>
+                  </div>
+                </div>
+              )}
 
-            {activeTab === 'requisitions' && currentUser?.role === 'admin' && (
-              <AdminRequisitionsView
-                orders={orders}
-                materials={materials}
-                currentUser={currentUser}
-                onApproveAndDisburse={handleApproveAndDisburseOrder}
-                onRejectOrder={handleRejectOrder}
-                onViewPrintForm={order => setCurrentViewingOrder(order)}
-                onEditOrder={handleUpdateRequisition}
-                onCancelDisbursement={handleCancelDisbursement}
-              />
-            )}
+              {activeTab === 'requisition' && (
+                <UserRequisitionView
+                  materials={materials}
+                  user={currentUser}
+                  orders={orders}
+                  onSubmitOrder={handleSubmitRequisition}
+                  onViewPrintForm={order => setCurrentViewingOrder(order)}
+                  onCancelOrder={handleCancelUserOrder}
+                  onEditOrder={handleUpdateRequisition}
+                />
+              )}
 
-            {activeTab === 'dashboard' && currentUser?.role === 'admin' && (
-              <AdminDashboardView
-                materials={materials}
-                orders={orders}
-                stockIns={stockIns}
-                stockOuts={stockOuts}
-                onNavigateTab={tab => setActiveTab(tab)}
-              />
-            )}
+              {activeTab === 'requisitions' && currentUser?.role === 'admin' && (
+                <AdminRequisitionsView
+                  orders={orders}
+                  materials={materials}
+                  currentUser={currentUser}
+                  onApproveAndDisburse={handleApproveAndDisburseOrder}
+                  onRejectOrder={handleRejectOrder}
+                  onViewPrintForm={order => setCurrentViewingOrder(order)}
+                  onEditOrder={handleUpdateRequisition}
+                  onCancelDisbursement={handleCancelDisbursement}
+                />
+              )}
 
-            {activeTab === 'stockout' && currentUser?.role === 'admin' && (
-              <AdminStockOutView
-                stockOuts={stockOuts}
-                materials={materials}
-                user={currentUser}
-                spreadsheetId={spreadsheetId}
-                onAddStockOut={handleAddStockOut}
-                onEditStockOut={handleUpdateStockOut}
-                onDeleteStockOut={handleDeleteStockOut}
-              />
-            )}
+              {activeTab === 'dashboard' && currentUser?.role === 'admin' && (
+                <AdminDashboardView
+                  materials={materials}
+                  orders={orders}
+                  stockIns={stockIns}
+                  stockOuts={stockOuts}
+                  onNavigateTab={tab => setActiveTab(tab)}
+                />
+              )}
 
-            {activeTab === 'stockin' && currentUser?.role === 'admin' && (
-              <AdminStockInView
-                stockIns={stockIns}
-                materials={materials}
-                user={currentUser}
-                spreadsheetId={spreadsheetId}
-                onAddStockIn={handleAddStockIn}
-                onEditStockIn={handleUpdateStockIn}
-                onDeleteStockIn={handleDeleteStockIn}
-                onReceiveAll20={handleReceiveAll20}
-                onResetAllStockToZero={handleResetAllStockToZero}
-              />
-            )}
+              {activeTab === 'stockout' && currentUser?.role === 'admin' && (
+                <AdminStockOutView
+                  stockOuts={stockOuts}
+                  materials={materials}
+                  user={currentUser}
+                  spreadsheetId={spreadsheetId}
+                  onAddStockOut={handleAddStockOut}
+                  onEditStockOut={handleUpdateStockOut}
+                  onDeleteStockOut={handleDeleteStockOut}
+                />
+              )}
 
-            {activeTab === 'inventory' && currentUser?.role === 'admin' && (
-              <AdminInventoryReportView
-                materials={materials}
-                orders={orders}
-                stockOuts={stockOuts}
-                onResetAllStockToZero={handleResetAllStockToZero}
-                onReceiveAll20={handleReceiveAll20}
-                onAddMaterial={handleAddMaterial}
-                onUpdateMaterial={handleUpdateMaterial}
-                onViewLedger={(matId) => {
-                  if (matId) {
-                    setLedgerTargetMaterialId(matId);
-                  }
-                  setActiveTab('ledger');
-                }}
-              />
-            )}
+              {activeTab === 'stockin' && currentUser?.role === 'admin' && (
+                <AdminStockInView
+                  stockIns={stockIns}
+                  materials={materials}
+                  user={currentUser}
+                  spreadsheetId={spreadsheetId}
+                  onAddStockIn={handleAddStockIn}
+                  onEditStockIn={handleUpdateStockIn}
+                  onDeleteStockIn={handleDeleteStockIn}
+                  onReceiveAll20={handleReceiveAll20}
+                  onResetAllStockToZero={handleResetAllStockToZero}
+                />
+              )}
 
-            {activeTab === 'ledger' && currentUser?.role === 'admin' && (
-              <AdminLedgerView
-                materials={materials}
-                stockIns={stockIns}
-                stockOuts={stockOuts}
-                orders={orders}
-                initialSelectedId={ledgerTargetMaterialId}
-                onNavigateToStockIn={() => setActiveTab('stockin')}
-                onNavigateToStockOut={() => setActiveTab('stockout')}
-                onReceiveAll20={handleReceiveAll20}
-                onResetAllStockToZero={handleResetAllStockToZero}
-              />
-            )}
-          </>
-        )}
+              {activeTab === 'inventory' && currentUser?.role === 'admin' && (
+                <AdminInventoryReportView
+                  materials={materials}
+                  orders={orders}
+                  stockOuts={stockOuts}
+                  onResetAllStockToZero={handleResetAllStockToZero}
+                  onReceiveAll20={handleReceiveAll20}
+                  onAddMaterial={handleAddMaterial}
+                  onUpdateMaterial={handleUpdateMaterial}
+                  onViewLedger={(matId) => {
+                    if (matId) {
+                      setLedgerTargetMaterialId(matId);
+                    }
+                    setActiveTab('ledger');
+                  }}
+                />
+              )}
+
+              {activeTab === 'ledger' && currentUser?.role === 'admin' && (
+                <AdminLedgerView
+                  materials={materials}
+                  stockIns={stockIns}
+                  stockOuts={stockOuts}
+                  orders={orders}
+                  initialSelectedId={ledgerTargetMaterialId}
+                  onNavigateToStockIn={() => setActiveTab('stockin')}
+                  onNavigateToStockOut={() => setActiveTab('stockout')}
+                  onReceiveAll20={handleReceiveAll20}
+                  onResetAllStockToZero={handleResetAllStockToZero}
+                />
+              )}
+            </>
+          )}
         </main>
 
         {/* Right-side Control Panel (แผงควบคุมด้านข้างฝั่งขวา) */}
@@ -1650,6 +1811,8 @@ export default function App() {
             isMobileOpen={isMobileSidebarOpen}
             onCloseMobile={() => setIsMobileSidebarOpen(false)}
             spreadsheetId={spreadsheetId}
+            onLogout={handleLogout}
+            onOpenLogin={() => setShowLoginModal(true)}
           />
         )}
       </div>
@@ -1676,10 +1839,8 @@ export default function App() {
       {showLoginModal && (
         <LoginModal
           currentUser={currentUser}
-          onLogin={user => {
-            setCurrentUser(user);
-            setShowLoginModal(false);
-          }}
+          onLogin={handleLogin}
+          onLogout={handleLogout}
           onClose={() => setShowLoginModal(false)}
         />
       )}
