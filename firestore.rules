@@ -1,0 +1,86 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Test connection doc used for client bootstrap health check
+    match /test/{testId} {
+      allow read, write: if true;
+    }
+
+    // Materials Catalog
+    match /materials/{materialId} {
+      allow read: if true;
+      allow create, update: if isValidId(materialId)
+        && incoming().name is string
+        && incoming().name.size() > 0
+        && incoming().name.size() <= 300
+        && incoming().category is string
+        && incoming().category.size() <= 150
+        && incoming().unit is string
+        && incoming().unit.size() <= 100
+        && incoming().unitPrice is number
+        && incoming().unitPrice >= 0
+        && incoming().currentStock is number
+        && incoming().currentStock >= 0;
+      allow delete: if isValidId(materialId);
+    }
+
+    // Orders Collection
+    match /orders/{orderId} {
+      allow read: if true;
+      allow create: if isValidId(orderId)
+        && incoming().docNo is string
+        && incoming().docNo.size() > 0
+        && incoming().requesterName is string
+        && incoming().requesterName.size() > 0
+        && incoming().department is string
+        && incoming().status in ['รออนุมัติ', 'อนุมัติแล้ว', 'เบิกจ่ายแล้ว', 'ยกเลิก'];
+      allow update: if isValidId(orderId)
+        && incoming().docNo is string
+        && incoming().status in ['รออนุมัติ', 'อนุมัติแล้ว', 'เบิกจ่ายแล้ว', 'ยกเลิก'];
+      allow delete: if isValidId(orderId);
+    }
+
+    // Stock In Records
+    match /stockIn/{stockInId} {
+      allow read: if true;
+      allow create, update: if isValidId(stockInId)
+        && incoming().materialId is string
+        && incoming().materialId.size() > 0
+        && incoming().quantity is number
+        && incoming().quantity > 0
+        && incoming().receiverName is string;
+      allow delete: if isValidId(stockInId);
+    }
+
+    // Stock Out Records
+    match /stockOut/{stockOutId} {
+      allow read: if true;
+      allow create, update: if isValidId(stockOutId)
+        && incoming().materialId is string
+        && incoming().materialId.size() > 0
+        && incoming().quantity is number
+        && incoming().quantity > 0
+        && incoming().requesterName is string;
+      allow delete: if isValidId(stockOutId);
+    }
+  }
+}

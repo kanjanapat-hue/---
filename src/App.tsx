@@ -14,6 +14,22 @@ import {
   INITIAL_STOCK_OUT,
   getMaterialImage
 } from './data/materials';
+import {
+  testFirebaseConnection,
+  subscribeMaterials,
+  subscribeOrders,
+  subscribeStockIn,
+  subscribeStockOut,
+  saveMaterialToFirestore,
+  saveOrderToFirestore,
+  saveStockInToFirestore,
+  saveStockOutToFirestore,
+  deleteMaterialFromFirestore,
+  deleteOrderFromFirestore,
+  deleteStockInFromFirestore,
+  deleteStockOutFromFirestore,
+  seedInitialFirestoreData
+} from './services/firebase';
 import { UserRequisitionView } from './components/UserRequisitionView';
 import { AdminDashboardView } from './components/AdminDashboardView';
 import { AdminRequisitionsView } from './components/AdminRequisitionsView';
@@ -258,6 +274,67 @@ export default function App() {
     }
   }, [currentUser]);
 
+  // Firebase Cloud Real-time Synchronization
+  const [firebaseConnected, setFirebaseConnected] = useState<boolean | null>(null);
+  const [isFirebaseSyncing, setIsFirebaseSyncing] = useState(false);
+
+  useEffect(() => {
+    let unsubscribeMaterials: (() => void) | undefined;
+    let unsubscribeOrders: (() => void) | undefined;
+    let unsubscribeStockIn: (() => void) | undefined;
+    let unsubscribeStockOut: (() => void) | undefined;
+
+    const initFirebase = async () => {
+      try {
+        setIsFirebaseSyncing(true);
+        const ok = await testFirebaseConnection();
+        setFirebaseConnected(ok);
+
+        // Seed initial data to cloud if collections are empty
+        await seedInitialFirestoreData(materials, orders, stockIns, stockOuts);
+
+        // Listen for real-time updates from other clients/devices
+        unsubscribeMaterials = subscribeMaterials(items => {
+          if (items.length > 0) {
+            setMaterials(items);
+          }
+        });
+
+        unsubscribeOrders = subscribeOrders(items => {
+          if (items.length > 0) {
+            setOrders(items);
+          }
+        });
+
+        unsubscribeStockIn = subscribeStockIn(items => {
+          if (items.length > 0) {
+            setStockIns(items);
+          }
+        });
+
+        unsubscribeStockOut = subscribeStockOut(items => {
+          if (items.length > 0) {
+            setStockOuts(items);
+          }
+        });
+      } catch (err) {
+        console.warn('Firebase initialization notice:', err);
+        setFirebaseConnected(false);
+      } finally {
+        setIsFirebaseSyncing(false);
+      }
+    };
+
+    initFirebase();
+
+    return () => {
+      if (unsubscribeMaterials) unsubscribeMaterials();
+      if (unsubscribeOrders) unsubscribeOrders();
+      if (unsubscribeStockIn) unsubscribeStockIn();
+      if (unsubscribeStockOut) unsubscribeStockOut();
+    };
+  }, []);
+
   // Pending requisitions count
   const pendingOrdersCount = orders.filter(o => o.status === 'รออนุมัติ').length;
 
@@ -299,6 +376,7 @@ export default function App() {
 
     // Save order with status 'รออนุมัติ' (Stock is NOT deducted until admin approves!)
     setOrders(prev => [newOrder, ...prev]);
+    saveOrderToFirestore(newOrder).catch(err => console.warn('Firestore sync order error:', err));
 
     // Play notification sound
     playNotificationChime();
@@ -316,7 +394,7 @@ export default function App() {
     setToastMessage({
       type: 'success',
       title: 'ยื่นคำขอเบิกพัสดุสำเร็จ!',
-      desc: `คำขอเบิกเลขที่ ${docNo} ถูกส่งไปยังระบบของเจ้าหน้าที่พัสดุเรียบร้อยแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบและอนุมัติเบิกจ่ายออกจากคลัง`
+      desc: `คำขอเบิกเลขที่ ${docNo} ถูกส่งไปยังระบบของเจ้าหน้าที่พัสดุและบันทึกคลาวด์เรียบร้อยแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบและอนุมัติเบิกจ่ายออกจากคลัง`
     });
   };
 
@@ -344,7 +422,7 @@ export default function App() {
 
       if (approvedQty > 0) {
         deductions[item.materialId] = (deductions[item.materialId] || 0) + approvedQty;
-        createdStockOuts.push({
+        const outRecord: StockOutRecord = {
           id: `OUT-${Date.now()}-${idx + 1}`,
           date,
           requisitionDocNo: order.docNo,
@@ -359,23 +437,27 @@ export default function App() {
           department: order.department,
           disburserName: approverName,
           note: approverNote ? `${order.purpose} (หมายเหตุ: ${approverNote})` : order.purpose
-        });
+        };
+        createdStockOuts.push(outRecord);
+        saveStockOutToFirestore(outRecord).catch(err => console.warn('Firestore sync stock out error:', err));
       }
     });
 
-    // 2. Deduct from materials stock
+    // 2. Deduct from materials stock and sync to Firestore
     setMaterials(prev =>
       prev.map(mat => {
         const deductQty = deductions[mat.id];
         if (deductQty && deductQty > 0) {
           const nextStock = Math.max(0, mat.currentStock - deductQty);
           const nextWithdrawn = (mat.totalWithdrawn || 0) + deductQty;
-          return {
+          const updatedMat = {
             ...mat,
             currentStock: nextStock,
             totalWithdrawn: nextWithdrawn,
             refillStatus: nextStock <= 0 ? 'วัสดุหมด' : (nextStock <= mat.minQty ? 'ใกล้หมด' : 'OK')
           };
+          saveMaterialToFirestore(updatedMat).catch(err => console.warn('Firestore sync material error:', err));
+          return updatedMat;
         }
         return mat;
       })
@@ -387,6 +469,7 @@ export default function App() {
     }
 
     // 4. Update order status to 'เบิกจ่ายแล้ว' with accurate quantities and amounts
+    let updatedOrderObj: RequisitionOrder | null = null;
     setOrders(prev =>
       prev.map(o => {
         if (o.id === orderId) {
@@ -402,7 +485,7 @@ export default function App() {
           });
           const totalAmount = updatedItems.reduce((sum, it) => sum + it.totalAmount, 0);
 
-          return {
+          const updated: RequisitionOrder = {
             ...o,
             status: 'เบิกจ่ายแล้ว',
             items: updatedItems,
@@ -411,10 +494,16 @@ export default function App() {
             disbursedDate: `${date} ${time}`,
             purpose: approverNote ? `${o.purpose} [หมายเหตุเจ้าหน้าที่: ${approverNote}]` : o.purpose
           };
+          updatedOrderObj = updated;
+          return updated;
         }
         return o;
       })
     );
+
+    if (updatedOrderObj) {
+      saveOrderToFirestore(updatedOrderObj).catch(err => console.warn('Firestore sync order error:', err));
+    }
 
     // Dismiss any alert for this order
     if (adminAlert && adminAlert.id === orderId) {
@@ -425,7 +514,7 @@ export default function App() {
     setToastMessage({
       type: 'success',
       title: 'อนุมัติและตัดจ่ายพัสดุสำเร็จ!',
-      desc: `อนุมัติใบขอเบิก ${order.docNo} และตัดสต็อกออกจากระบบเรียบร้อยแล้ว บันทึกลงสมุดคุมบัญชีพัสดุและประวัติการเบิกจ่ายอัตโนมัติ`
+      desc: `อนุมัติใบขอเบิก ${order.docNo} และตัดสต็อกออกจากระบบเรียบร้อยแล้ว บันทึกลงสมุดคุมบัญชีพัสดุและคลาวด์อัตโนมัติ`
     });
   };
 
@@ -435,20 +524,27 @@ export default function App() {
     const date = new Date().toISOString().split('T')[0];
     const time = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
 
+    let updatedOrder: RequisitionOrder | null = null;
     setOrders(prev =>
       prev.map(o => {
         if (o.id === orderId) {
-          return {
+          const res: RequisitionOrder = {
             ...o,
             status: 'ยกเลิก',
             approverName,
             disbursedDate: `${date} ${time}`,
             purpose: `${o.purpose} [ไม่อนุมัติ: ${reason}]`
           };
+          updatedOrder = res;
+          return res;
         }
         return o;
       })
     );
+
+    if (updatedOrder) {
+      saveOrderToFirestore(updatedOrder).catch(err => console.warn('Firestore sync reject error:', err));
+    }
 
     if (adminAlert && adminAlert.id === orderId) {
       setAdminAlert(null);
@@ -463,18 +559,26 @@ export default function App() {
 
   // User: Cancel Requisition (if pending)
   const handleCancelUserOrder = (orderId: string) => {
+    let canceledOrder: RequisitionOrder | null = null;
     setOrders(prev =>
       prev.map(o => {
         if (o.id === orderId && o.status === 'รออนุมัติ') {
-          return {
+          const res: RequisitionOrder = {
             ...o,
             status: 'ยกเลิก',
             purpose: `${o.purpose} [ผู้ขอเบิกยกเลิกรายการ]`
           };
+          canceledOrder = res;
+          return res;
         }
         return o;
       })
     );
+
+    if (canceledOrder) {
+      saveOrderToFirestore(canceledOrder).catch(err => console.warn('Firestore sync cancel error:', err));
+    }
+
     if (adminAlert && adminAlert.id === orderId) {
       setAdminAlert(null);
     }
@@ -569,6 +673,7 @@ export default function App() {
       }
     }
 
+    let updatedOrderObj: RequisitionOrder | null = null;
     setOrders(prev =>
       prev.map(o => {
         if (o.id === orderId) {
@@ -580,17 +685,23 @@ export default function App() {
               : it.approvedQty
           }));
 
-          return {
+          const updated: RequisitionOrder = {
             ...o,
             purpose: updatedData.purpose,
             items: itemsWithApproved,
             totalItems: updatedData.totalItems,
             totalAmount: updatedData.totalAmount
           };
+          updatedOrderObj = updated;
+          return updated;
         }
         return o;
       })
     );
+
+    if (updatedOrderObj) {
+      saveOrderToFirestore(updatedOrderObj).catch(err => console.warn('Firestore sync updated order error:', err));
+    }
 
     setToastMessage({
       type: 'success',
@@ -620,35 +731,48 @@ export default function App() {
         if (qtyToRestore && qtyToRestore > 0) {
           const nextStock = mat.currentStock + qtyToRestore;
           const nextWithdrawn = Math.max(0, (mat.totalWithdrawn || 0) - qtyToRestore);
-          return {
+          const updatedMat = {
             ...mat,
             currentStock: nextStock,
             totalWithdrawn: nextWithdrawn,
             refillStatus: nextStock <= 0 ? 'วัสดุหมด' : (nextStock <= mat.minQty ? 'ใกล้หมด' : 'OK')
           };
+          saveMaterialToFirestore(updatedMat).catch(err => console.warn('Firestore sync material error:', err));
+          return updatedMat;
         }
         return mat;
       })
     );
 
-    // 2. Remove matching stockOut records
+    // 2. Remove matching stockOut records from state and Firestore
+    const matchingOuts = stockOuts.filter(so => so.requisitionDocNo === order.docNo);
+    matchingOuts.forEach(so => {
+      deleteStockOutFromFirestore(so.id).catch(err => console.warn('Firestore delete stock out error:', err));
+    });
     setStockOuts(prev => prev.filter(so => so.requisitionDocNo !== order.docNo));
 
     // 3. Mark order as 'ยกเลิก'
+    let canceledOrderObj: RequisitionOrder | null = null;
     setOrders(prev =>
       prev.map(o => {
         if (o.id === orderId) {
-          return {
+          const res: RequisitionOrder = {
             ...o,
             status: 'ยกเลิก',
             purpose: o.purpose.includes('ยกเลิกการเบิกจ่าย')
               ? o.purpose
               : `${o.purpose} [ยกเลิกการเบิกจ่ายและคืนสต็อกเข้าคลังแล้ว โดย ${currentUser?.name || 'เจ้าหน้าที่งานการเงินและพัสดุ'}]`
           };
+          canceledOrderObj = res;
+          return res;
         }
         return o;
       })
     );
+
+    if (canceledOrderObj) {
+      saveOrderToFirestore(canceledOrderObj).catch(err => console.warn('Firestore sync order error:', err));
+    }
 
     playNotificationChime();
     setToastMessage({
@@ -661,17 +785,21 @@ export default function App() {
   // Add Manual Stock Out (Admin 💰 เบิกจ่าย)
   const handleAddStockOut = (record: StockOutRecord) => {
     setStockOuts(prev => [record, ...prev]);
+    saveStockOutToFirestore(record).catch(err => console.warn('Firestore save stock out error:', err));
+
     // Deduct stock in materials inventory
     setMaterials(prev =>
       prev.map(mat => {
         if (mat.id === record.materialId) {
           const nextStock = Math.max(0, mat.currentStock - record.quantity);
-          return {
+          const updatedMat = {
             ...mat,
             currentStock: nextStock,
             totalWithdrawn: mat.totalWithdrawn + record.quantity,
             refillStatus: nextStock <= 0 ? 'วัสดุหมด' : (nextStock <= mat.minQty ? 'ใกล้หมด' : 'OK')
           };
+          saveMaterialToFirestore(updatedMat).catch(err => console.warn('Firestore save material error:', err));
+          return updatedMat;
         }
         return mat;
       })
@@ -684,17 +812,21 @@ export default function App() {
     if (!oldRecord) return;
     const diff = updatedRecord.quantity - oldRecord.quantity;
 
+    saveStockOutToFirestore(updatedRecord).catch(err => console.warn('Firestore update stock out error:', err));
+
     setMaterials(prev =>
       prev.map(mat => {
         if (mat.id === updatedRecord.materialId) {
           const nextStock = Math.max(0, mat.currentStock - diff);
           const nextWithdrawn = Math.max(0, (mat.totalWithdrawn || 0) + diff);
-          return {
+          const updatedMat = {
             ...mat,
             currentStock: nextStock,
             totalWithdrawn: nextWithdrawn,
             refillStatus: nextStock <= 0 ? 'วัสดุหมด' : (nextStock <= mat.minQty ? 'ใกล้หมด' : 'OK')
           };
+          saveMaterialToFirestore(updatedMat).catch(err => console.warn('Firestore update material error:', err));
+          return updatedMat;
         }
         return mat;
       })
@@ -716,17 +848,21 @@ export default function App() {
     const target = stockOuts.find(r => r.id === recordId);
     if (!target) return;
 
+    deleteStockOutFromFirestore(recordId).catch(err => console.warn('Firestore delete stock out error:', err));
+
     setMaterials(prev =>
       prev.map(mat => {
         if (mat.id === target.materialId) {
           const nextStock = mat.currentStock + target.quantity;
           const nextWithdrawn = Math.max(0, (mat.totalWithdrawn || 0) - target.quantity);
-          return {
+          const updatedMat = {
             ...mat,
             currentStock: nextStock,
             totalWithdrawn: nextWithdrawn,
             refillStatus: nextStock <= 0 ? 'วัสดุหมด' : (nextStock <= mat.minQty ? 'ใกล้หมด' : 'OK')
           };
+          saveMaterialToFirestore(updatedMat).catch(err => console.warn('Firestore restore material error:', err));
+          return updatedMat;
         }
         return mat;
       })
@@ -744,17 +880,21 @@ export default function App() {
   // Add Manual Stock In (Admin 💸 รับเข้า)
   const handleAddStockIn = (record: StockInRecord) => {
     setStockIns(prev => [record, ...prev]);
+    saveStockInToFirestore(record).catch(err => console.warn('Firestore save stock in error:', err));
+
     // Increase stock in materials inventory
     setMaterials(prev =>
       prev.map(mat => {
         if (mat.id === record.materialId) {
           const nextStock = mat.currentStock + record.quantity;
-          return {
+          const updatedMat = {
             ...mat,
             currentStock: nextStock,
             unitPrice: record.unitPrice || mat.unitPrice,
             refillStatus: nextStock <= 0 ? 'วัสดุหมด' : (nextStock <= mat.minQty ? 'ใกล้หมด' : 'OK')
           };
+          saveMaterialToFirestore(updatedMat).catch(err => console.warn('Firestore update material error:', err));
+          return updatedMat;
         }
         return mat;
       })
@@ -767,16 +907,20 @@ export default function App() {
     if (!oldRecord) return;
     const diff = updatedRecord.quantity - oldRecord.quantity;
 
+    saveStockInToFirestore(updatedRecord).catch(err => console.warn('Firestore update stock in error:', err));
+
     setMaterials(prev =>
       prev.map(mat => {
         if (mat.id === updatedRecord.materialId) {
           const nextStock = Math.max(0, mat.currentStock + diff);
-          return {
+          const updatedMat = {
             ...mat,
             currentStock: nextStock,
             unitPrice: updatedRecord.unitPrice || mat.unitPrice,
             refillStatus: nextStock <= 0 ? 'วัสดุหมด' : (nextStock <= mat.minQty ? 'ใกล้หมด' : 'OK')
           };
+          saveMaterialToFirestore(updatedMat).catch(err => console.warn('Firestore update material error:', err));
+          return updatedMat;
         }
         return mat;
       })
@@ -798,15 +942,19 @@ export default function App() {
     const target = stockIns.find(r => r.id === recordId);
     if (!target) return;
 
+    deleteStockInFromFirestore(recordId).catch(err => console.warn('Firestore delete stock in error:', err));
+
     setMaterials(prev =>
       prev.map(mat => {
         if (mat.id === target.materialId) {
           const nextStock = Math.max(0, mat.currentStock - target.quantity);
-          return {
+          const updatedMat = {
             ...mat,
             currentStock: nextStock,
             refillStatus: nextStock <= 0 ? 'วัสดุหมด' : (nextStock <= mat.minQty ? 'ใกล้หมด' : 'OK')
           };
+          saveMaterialToFirestore(updatedMat).catch(err => console.warn('Firestore update material error:', err));
+          return updatedMat;
         }
         return mat;
       })
@@ -824,6 +972,7 @@ export default function App() {
   // Admin: Add New Material Item
   const handleAddMaterial = (newMaterial: MaterialItem) => {
     setMaterials(prev => [...prev, newMaterial]);
+    saveMaterialToFirestore(newMaterial).catch(err => console.warn('Firestore save material error:', err));
 
     // If new material starts with stock > 0, create an initial stock-in record
     if (newMaterial.currentStock > 0) {
@@ -843,6 +992,7 @@ export default function App() {
         note: 'บันทึกสต็อกตั้งต้นจากการเพิ่มรายการวัสดุใหม่'
       };
       setStockIns(prev => [initStockIn, ...prev]);
+      saveStockInToFirestore(initStockIn).catch(err => console.warn('Firestore save stock in error:', err));
     }
 
     setToastMessage({
@@ -857,6 +1007,8 @@ export default function App() {
     setMaterials(prev =>
       prev.map(mat => (mat.id === updatedMaterial.id ? updatedMaterial : mat))
     );
+    saveMaterialToFirestore(updatedMaterial).catch(err => console.warn('Firestore update material error:', err));
+
     setToastMessage({
       type: 'success',
       title: 'บันทึกการแก้ไขพัสดุสำเร็จ',
@@ -878,13 +1030,16 @@ export default function App() {
 
   // Reset all stock quantities to 0
   const handleResetAllStockToZero = () => {
-    setMaterials(prev =>
-      prev.map(item => ({
-        ...item,
-        currentStock: 0,
-        refillStatus: 'วัสดุหมด' as const
-      }))
-    );
+    const updated = materials.map(item => ({
+      ...item,
+      currentStock: 0,
+      refillStatus: 'วัสดุหมด' as const
+    }));
+    setMaterials(updated);
+    updated.forEach(item => {
+      saveMaterialToFirestore(item).catch(err => console.warn('Firestore sync reset error:', err));
+    });
+
     playNotificationChime();
     setToastMessage({
       type: 'info',
@@ -905,7 +1060,7 @@ export default function App() {
       const refillStatus: 'OK' | 'ใกล้หมด' | 'วัสดุหมด' =
         newStock >= item.minQty ? 'OK' : newStock > 0 ? 'ใกล้หมด' : 'วัสดุหมด';
 
-      newStockIns.push({
+      const inRecord: StockInRecord = {
         id: `IN-${Date.now()}-${idx + 1}`,
         date,
         docNo: batchDocNo,
@@ -919,13 +1074,17 @@ export default function App() {
         supplier: 'ร้านสหกรณ์มหาวิทยาลัยมหาสารคาม จำกัด',
         receiverName: currentUser?.name || 'เจ้าหน้าที่งานการเงินและพัสดุ',
         note: 'รับเข้าวัสดุทุกรายการอย่างละ 20 หน่วย'
-      });
+      };
+      newStockIns.push(inRecord);
+      saveStockInToFirestore(inRecord).catch(err => console.warn('Firestore sync batch in error:', err));
 
-      return {
+      const updatedMat = {
         ...item,
         currentStock: newStock,
         refillStatus
       };
+      saveMaterialToFirestore(updatedMat).catch(err => console.warn('Firestore sync batch mat error:', err));
+      return updatedMat;
     });
 
     setMaterials(updatedMaterials);
@@ -1157,6 +1316,36 @@ export default function App() {
                   )}
                 </button>
               )}
+
+              {/* Firebase Firestore Cloud Real-time Status Badge */}
+              <div
+                id="firebase-sync-status-badge"
+                className={`hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all ${
+                  firebaseConnected
+                    ? 'border-emerald-200 bg-emerald-50/90 text-emerald-800 shadow-2xs'
+                    : firebaseConnected === false
+                    ? 'border-amber-200 bg-amber-50 text-amber-800'
+                    : 'border-slate-200 bg-slate-50 text-slate-500'
+                }`}
+                title="ระบบเชื่อมต่อฐานข้อมูล Google Firebase Firestore (ซิงค์ข้อมูลเรียลไทม์ข้ามอุปกรณ์และเบราว์เซอร์)"
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    firebaseConnected
+                      ? isFirebaseSyncing
+                        ? 'bg-amber-500 animate-spin'
+                        : 'bg-emerald-500 animate-pulse'
+                      : 'bg-amber-400'
+                  }`}
+                />
+                <span className="truncate">
+                  {isFirebaseSyncing
+                    ? 'กำลังเชื่อมต่อ Cloud...'
+                    : firebaseConnected
+                    ? '🔥 Firebase ซิงค์เรียลไทม์'
+                    : '🔥 Firebase Cloud'}
+                </span>
+              </div>
 
               {/* Notification Bell (Admin side notification for pending requisitions) */}
               {currentUser?.role === 'admin' && (
