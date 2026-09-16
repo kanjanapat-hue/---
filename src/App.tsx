@@ -28,6 +28,7 @@ import {
   deleteOrderFromFirestore,
   deleteStockInFromFirestore,
   deleteStockOutFromFirestore,
+  clearAllStockInsFromFirestore,
   seedInitialFirestoreData
 } from './services/firebase';
 import { UserRequisitionView } from './components/UserRequisitionView';
@@ -85,16 +86,36 @@ export default function App() {
         imageUrl: item.imageUrl || getMaterialImage(item.name, item.category)
       }));
 
-    // Check if the 20-unit update has been applied to this browser's localStorage
-    const hasStock20Applied = localStorage.getItem('copag_stock_20_applied_v2');
-    if (!hasStock20Applied) {
-      localStorage.setItem('copag_stock_20_applied_v2', 'true');
-      localStorage.removeItem('copag_materials');
-      localStorage.removeItem('copag_stock_in');
-      return normalize(INITIAL_MATERIALS);
-    }
     const saved = localStorage.getItem('copag_materials');
-    return saved ? normalize(JSON.parse(saved)) : normalize(INITIAL_MATERIALS);
+    if (saved) {
+      try {
+        const parsed: MaterialItem[] = JSON.parse(saved);
+        if (parsed.length >= 367) {
+          return normalize(parsed);
+        }
+        // If saved list has fewer than 367 items (e.g. previous 91 items cached in browser),
+        // merge with the official 367 items catalog to ensure all 367 are loaded
+        const savedMap = new Map(parsed.map(it => [it.id, it]));
+        const merged = INITIAL_MATERIALS.map(init => {
+          const prev = savedMap.get(init.id);
+          if (prev) {
+            return {
+              ...init,
+              currentStock: typeof prev.currentStock === 'number' ? prev.currentStock : init.currentStock,
+              refillStatus: prev.refillStatus || init.refillStatus
+            };
+          }
+          return init;
+        });
+        localStorage.setItem('copag_materials', JSON.stringify(merged));
+        return normalize(merged);
+      } catch (e) {
+        console.warn('Error reading saved materials:', e);
+      }
+    }
+
+    localStorage.setItem('copag_materials', JSON.stringify(INITIAL_MATERIALS));
+    return normalize(INITIAL_MATERIALS);
   });
 
   const [orders, setOrders] = useState<RequisitionOrder[]>(() => {
@@ -103,12 +124,24 @@ export default function App() {
   });
 
   const [stockIns, setStockIns] = useState<StockInRecord[]>(() => {
-    const hasStock20Applied = localStorage.getItem('copag_stock_20_applied_v2');
-    if (!hasStock20Applied) {
-      return INITIAL_STOCK_IN;
-    }
     const saved = localStorage.getItem('copag_stock_in');
-    return saved ? JSON.parse(saved) : INITIAL_STOCK_IN;
+    if (saved) {
+      try {
+        const parsed: StockInRecord[] = JSON.parse(saved);
+        if (parsed.length >= 367) {
+          return parsed;
+        }
+        const existingMaterialIds = new Set(parsed.map(si => si.materialId));
+        const missingStockIns = INITIAL_STOCK_IN.filter(si => !existingMaterialIds.has(si.materialId));
+        const merged = [...parsed, ...missingStockIns];
+        localStorage.setItem('copag_stock_in', JSON.stringify(merged));
+        return merged;
+      } catch (e) {
+        console.warn('Error merging stockIns:', e);
+      }
+    }
+    localStorage.setItem('copag_stock_in', JSON.stringify(INITIAL_STOCK_IN));
+    return INITIAL_STOCK_IN;
   });
 
   const [stockOuts, setStockOuts] = useState<StockOutRecord[]>(() => {
@@ -133,8 +166,8 @@ export default function App() {
         console.warn('Failed to parse saved user:', err);
       }
     }
-    // Default initial user: kanjanapat.m@msu.ac.th as Super Admin
-    return SUPER_ADMIN_PROFILE;
+    // Default initial user: null (displays the login page matching Screenshot_1.png)
+    return null;
   });
 
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -327,8 +360,13 @@ export default function App() {
 
         // Listen for real-time updates from other clients/devices
         unsubscribeMaterials = subscribeMaterials(items => {
-          if (items.length > 0) {
+          if (items.length >= 367) {
             setMaterials(items);
+          } else if (items.length > 0) {
+            // Guard against partial fetches: always ensure all 367 materials exist
+            const cloudMap = new Map(items.map(it => [it.id, it]));
+            const fullList = INITIAL_MATERIALS.map(init => cloudMap.get(init.id) || init);
+            setMaterials(fullList);
           }
         });
 
@@ -375,7 +413,7 @@ export default function App() {
   const handleSubmitRequisition = (cart: RequisitionCartItem[], purpose: string) => {
     if (!currentUser) return;
 
-    const docNo = `COPAG-REQ-2569/${String(orders.length + 1).padStart(3, '0')}`;
+    const docNo = `COPAG-REQ-2570/${String(orders.length + 1).padStart(3, '0')}`;
     const date = new Date().toISOString().split('T')[0];
 
     const orderItems = cart.map(item => ({
@@ -480,7 +518,7 @@ export default function App() {
       prev.map(mat => {
         const deductQty = deductions[mat.id];
         if (deductQty && deductQty > 0) {
-          const nextStock = Math.max(0, mat.currentStock - deductQty);
+          const nextStock = mat.currentStock - deductQty;
           const nextWithdrawn = (mat.totalWithdrawn || 0) + deductQty;
           const updatedMat = {
             ...mat,
@@ -664,7 +702,7 @@ export default function App() {
           prev.map(mat => {
             const diff = diffMap.get(mat.id);
             if (diff !== undefined && diff !== 0) {
-              const nextStock = Math.max(0, mat.currentStock - diff);
+              const nextStock = mat.currentStock - diff;
               const nextWithdrawn = Math.max(0, (mat.totalWithdrawn || 0) + diff);
               return {
                 ...mat,
@@ -814,6 +852,55 @@ export default function App() {
     });
   };
 
+  // Admin: Delete requisition order permanently
+  const handleDeleteOrder = (orderId: string) => {
+    const target = orders.find(o => o.id === orderId);
+    if (!target) return;
+
+    // If order was already approved/disbursed, restore the stock
+    if (target.status === 'เบิกจ่ายแล้ว' || target.status === 'อนุมัติแล้ว') {
+      const restoreQuantities: Record<string, number> = {};
+      target.items.forEach(it => {
+        const qty = it.approvedQty !== undefined ? it.approvedQty : it.requestedQty;
+        if (qty > 0) {
+          restoreQuantities[it.materialId] = (restoreQuantities[it.materialId] || 0) + qty;
+        }
+      });
+
+      setMaterials(prev =>
+        prev.map(mat => {
+          const qtyToRestore = restoreQuantities[mat.id];
+          if (qtyToRestore && qtyToRestore > 0) {
+            const nextStock = mat.currentStock + qtyToRestore;
+            const nextWithdrawn = Math.max(0, (mat.totalWithdrawn || 0) - qtyToRestore);
+            const updatedMat = {
+              ...mat,
+              currentStock: nextStock,
+              totalWithdrawn: nextWithdrawn,
+              refillStatus: nextStock <= 0 ? 'วัสดุหมด' : (nextStock <= mat.minQty ? 'ใกล้หมด' : 'OK')
+            };
+            saveMaterialToFirestore(updatedMat).catch(err => console.warn('Firestore restore material error:', err));
+            return updatedMat;
+          }
+          return mat;
+        })
+      );
+
+      // Clean up linked stock-outs
+      setStockOuts(prev => prev.filter(so => so.requisitionDocNo !== target.docNo));
+    }
+
+    deleteOrderFromFirestore(orderId).catch(err => console.warn('Firestore delete order error:', err));
+    setOrders(prev => prev.filter(o => o.id !== orderId));
+
+    playNotificationChime();
+    setToastMessage({
+      type: 'info',
+      title: 'ลบใบขอเบิกพัสดุเรียบร้อย',
+      desc: `ลบใบขอเบิกเลขที่ ${target.docNo} ออกจากระบบแล้ว`
+    });
+  };
+
   // Add Manual Stock Out (Admin 💰 เบิกจ่าย)
   const handleAddStockOut = (record: StockOutRecord) => {
     setStockOuts(prev => [record, ...prev]);
@@ -823,7 +910,7 @@ export default function App() {
     setMaterials(prev =>
       prev.map(mat => {
         if (mat.id === record.materialId) {
-          const nextStock = Math.max(0, mat.currentStock - record.quantity);
+          const nextStock = mat.currentStock - record.quantity;
           const updatedMat = {
             ...mat,
             currentStock: nextStock,
@@ -849,7 +936,7 @@ export default function App() {
     setMaterials(prev =>
       prev.map(mat => {
         if (mat.id === updatedRecord.materialId) {
-          const nextStock = Math.max(0, mat.currentStock - diff);
+          const nextStock = mat.currentStock - diff;
           const nextWithdrawn = Math.max(0, (mat.totalWithdrawn || 0) + diff);
           const updatedMat = {
             ...mat,
@@ -944,7 +1031,7 @@ export default function App() {
     setMaterials(prev =>
       prev.map(mat => {
         if (mat.id === updatedRecord.materialId) {
-          const nextStock = Math.max(0, mat.currentStock + diff);
+          const nextStock = mat.currentStock + diff;
           const updatedMat = {
             ...mat,
             currentStock: nextStock,
@@ -979,7 +1066,7 @@ export default function App() {
     setMaterials(prev =>
       prev.map(mat => {
         if (mat.id === target.materialId) {
-          const nextStock = Math.max(0, mat.currentStock - target.quantity);
+          const nextStock = mat.currentStock - target.quantity;
           const updatedMat = {
             ...mat,
             currentStock: nextStock,
@@ -999,6 +1086,26 @@ export default function App() {
       title: 'ลบรายการรับเข้าเรียบร้อย',
       desc: `ลดสต็อกพัสดุ ${target.materialName} ลง ${target.quantity} ${target.unit} คืนแล้ว`
     });
+  };
+
+  // Admin: Clear all stock-in records from history and database
+  const handleClearAllStockIns = async () => {
+    try {
+      await clearAllStockInsFromFirestore();
+      setStockIns([]);
+      setToastMessage({
+        type: 'success',
+        title: 'ลบประวัติรับเข้าทั้งหมดเรียบร้อย',
+        desc: 'ล้างประวัติการรับเข้าพัสดุทั้งหมดออกจากระบบแล้ว พร้อมเริ่มต้นรอบปีงบประมาณ 2570'
+      });
+    } catch (err) {
+      console.error('Error clearing all stock-ins:', err);
+      setToastMessage({
+        type: 'error',
+        title: 'เกิดข้อผิดพลาดในการลบ',
+        desc: 'ไม่สามารถล้างประวัติรับเข้าได้ กรุณาลองใหม่อีกครั้ง'
+      });
+    }
   };
 
   // Admin: Add New Material Item
@@ -1045,6 +1152,21 @@ export default function App() {
       type: 'success',
       title: 'บันทึกการแก้ไขพัสดุสำเร็จ',
       desc: `อัปเดตข้อมูล ${updatedMaterial.name} (${updatedMaterial.id}) เรียบร้อยแล้ว`
+    });
+  };
+
+  // Admin: Delete Material Item permanently
+  const handleDeleteMaterial = (materialId: string) => {
+    const target = materials.find(m => m.id === materialId);
+    if (!target) return;
+
+    deleteMaterialFromFirestore(materialId).catch(err => console.warn('Firestore delete material error:', err));
+    setMaterials(prev => prev.filter(m => m.id !== materialId));
+
+    setToastMessage({
+      type: 'info',
+      title: 'ลบรายการพัสดุเรียบร้อย',
+      desc: `ลบ "${target.name}" (${target.id}) ออกจากทะเบียนคลังพัสดุแล้ว`
     });
   };
 
@@ -1128,6 +1250,66 @@ export default function App() {
       desc: `บันทึกรับเข้าพัสดุทุกรายการอย่างละ 20 หน่วย (${updatedMaterials.length} รายการ) เข้าสู่คลังและสมุดคุมเรียบร้อยแล้ว`
     });
   };
+
+  // When not logged in, render ONLY the clean login page matching Screenshot_1.png
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 sm:p-6 lg:p-8 selection:bg-amber-100 selection:text-amber-900">
+        <GuestWelcomeView onOpenLoginModal={() => setShowLoginModal(true)} />
+
+        {/* Login Modal */}
+        {showLoginModal && (
+          <LoginModal
+            currentUser={currentUser}
+            onLogin={handleLogin}
+            onLogout={handleLogout}
+            onClose={() => setShowLoginModal(false)}
+          />
+        )}
+
+        {/* Global Toast Notification */}
+        {toastMessage && (
+          <div className="fixed bottom-5 right-5 z-50 max-w-md w-full animate-in fade-in slide-in-from-bottom-5 duration-300">
+            <div
+              className={`p-4 rounded-xl shadow-xl border flex items-start gap-3 ${
+                toastMessage.type === 'success'
+                  ? 'bg-white border-emerald-200 text-slate-800'
+                  : toastMessage.type === 'warning'
+                  ? 'bg-white border-amber-200 text-slate-800'
+                  : 'bg-white border-sky-200 text-slate-800'
+              }`}
+            >
+              <div className="shrink-0 mt-0.5">
+                {toastMessage.type === 'success' ? (
+                  <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center">
+                    <CheckCircle2 className="w-5 h-5" />
+                  </div>
+                ) : toastMessage.type === 'warning' ? (
+                  <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-sky-100 text-sky-600 flex items-center justify-center">
+                    <Sparkles className="w-5 h-5" />
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-bold text-slate-900">{toastMessage.title}</h4>
+                <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">{toastMessage.desc}</p>
+              </div>
+              <button
+                onClick={() => setToastMessage(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-md cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-amber-100 selection:text-amber-900">
@@ -1650,14 +1832,7 @@ export default function App() {
       <div className="flex-1 flex flex-col lg:flex-row w-full min-h-0 relative">
         {/* Main Content Area */}
         <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
-          {!currentUser ? (
-            /* Logged-out / Guest State */
-            <GuestWelcomeView
-              onLoginProfile={handleLogin}
-              onOpenLoginModal={() => setShowLoginModal(true)}
-              materialsCount={materials.length}
-            />
-          ) : currentViewingOrder ? (
+          {currentViewingOrder ? (
             /* If user is currently looking at a generated Requisition Form for print / PDF */
             <RequisitionPrintForm
               order={currentViewingOrder}
@@ -1720,6 +1895,7 @@ export default function App() {
                   onViewPrintForm={order => setCurrentViewingOrder(order)}
                   onEditOrder={handleUpdateRequisition}
                   onCancelDisbursement={handleCancelDisbursement}
+                  onDeleteOrder={handleDeleteOrder}
                 />
               )}
 
@@ -1756,6 +1932,7 @@ export default function App() {
                   onDeleteStockIn={handleDeleteStockIn}
                   onReceiveAll20={handleReceiveAll20}
                   onResetAllStockToZero={handleResetAllStockToZero}
+                  onClearAllStockIn={handleClearAllStockIns}
                 />
               )}
 
@@ -1768,6 +1945,7 @@ export default function App() {
                   onReceiveAll20={handleReceiveAll20}
                   onAddMaterial={handleAddMaterial}
                   onUpdateMaterial={handleUpdateMaterial}
+                  onDeleteMaterial={handleDeleteMaterial}
                   onViewLedger={(matId) => {
                     if (matId) {
                       setLedgerTargetMaterialId(matId);

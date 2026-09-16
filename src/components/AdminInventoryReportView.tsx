@@ -27,7 +27,8 @@ import {
   Calculator,
   FileCheck,
   Info,
-  Check
+  Check,
+  Trash2
 } from 'lucide-react';
 
 interface AdminInventoryReportViewProps {
@@ -40,6 +41,7 @@ interface AdminInventoryReportViewProps {
   onViewLedger?: (materialId: string) => void;
   onAddMaterial?: (newMaterial: MaterialItem) => void;
   onUpdateMaterial?: (updatedMaterial: MaterialItem) => void;
+  onDeleteMaterial?: (materialId: string) => void;
 }
 
 export const AdminInventoryReportView: React.FC<AdminInventoryReportViewProps> = ({
@@ -51,6 +53,7 @@ export const AdminInventoryReportView: React.FC<AdminInventoryReportViewProps> =
   onViewLedger,
   onAddMaterial,
   onUpdateMaterial,
+  onDeleteMaterial,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ทั้งหมด');
@@ -701,6 +704,29 @@ export const AdminInventoryReportView: React.FC<AdminInventoryReportViewProps> =
                             <BookOpen className="w-3 h-3 text-slate-500" />
                           </button>
                         )}
+
+                        {onDeleteMaterial && (
+                          <button
+                            type="button"
+                            id={`btn-delete-material-${item.id}`}
+                            onClick={() => {
+                              setConfirmConfig({
+                                title: 'ยืนยันการลบรายการพัสดุ',
+                                message: `คุณต้องการลบพัสดุ "${item.name}" (รหัส: ${item.id}) ออกจากระบบใช่หรือไม่?`,
+                                details: `• หมวดหมู่: ${item.category}\n• จำนวนคงเหลือ: ${item.currentStock} ${item.unit}\n• ยอดเบิกสะสม: ${item.totalWithdrawn || 0} ${item.unit}\n\nหากลบแล้ว รายการพัสดุนี้จะถูกลบออกจากฐานข้อมูลคลังพัสดุ`,
+                                confirmText: 'ยืนยันลบรายการพัสดุ',
+                                variant: 'danger',
+                                icon: 'delete',
+                                onConfirm: () => onDeleteMaterial(item.id)
+                              });
+                            }}
+                            className="p-1.5 rounded-lg text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                            title={`ลบพัสดุ ${item.name}`}
+                          >
+                            <Trash2 className="w-3 h-3 text-rose-600" />
+                            <span>ลบ</span>
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -724,6 +750,10 @@ export const AdminInventoryReportView: React.FC<AdminInventoryReportViewProps> =
           material={editingMaterial}
           onClose={() => setEditingMaterial(null)}
           onSave={handleSaveEditedMaterial}
+          onDelete={onDeleteMaterial ? (id) => {
+            onDeleteMaterial(id);
+            setEditingMaterial(null);
+          } : undefined}
         />
       )}
 

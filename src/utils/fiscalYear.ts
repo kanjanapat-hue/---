@@ -36,19 +36,27 @@ export const THAI_MONTH_NAMES_FULL = [
   'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'
 ];
 
+export const TARGET_FISCAL_YEAR_BE = 2570;
+export const TARGET_FISCAL_YEAR_CE = 2027;
+
 /**
- * Returns fiscal year details and elapsed months based on a given date.
+ * Returns fiscal year details and elapsed months based on a given date or target fiscal year.
  */
-export function getFiscalYearInfo(date: Date = new Date()): FiscalYearInfo {
+export function getFiscalYearInfo(date: Date = new Date(), overrideFiscalYearBE: number = TARGET_FISCAL_YEAR_BE): FiscalYearInfo {
   const month = date.getMonth(); // 0 (Jan) - 11 (Dec)
   const yearCE = date.getFullYear();
 
-  // If month is Oct (9), Nov (10), Dec (11), it belongs to next CE fiscal year
-  const fiscalYearCE = month >= 9 ? yearCE + 1 : yearCE;
-  const fiscalYearBE = fiscalYearCE + 543;
+  // If overrideFiscalYearBE is specified and set to 2570 (starts Oct 2026 to Sep 2027):
+  const fiscalYearBE = overrideFiscalYearBE;
+  const fiscalYearCE = fiscalYearBE - 543;
 
   // Number of months elapsed from October 1 to current month (inclusive)
-  const elapsedMonths = month >= 9 ? (month - 9 + 1) : (month + 4);
+  // For FY 2570 beginning (Oct 2026 / 1 ต.ค. 2569):
+  let elapsedMonths = month >= 9 ? (month - 9 + 1) : (month + 4);
+  if (fiscalYearBE === 2570 && yearCE === 2026 && month < 9) {
+    // Preparing for FY 2570 starting Month 1
+    elapsedMonths = 1;
+  }
   const clampedMonths = Math.max(1, Math.min(12, elapsedMonths));
 
   const currentMonthName = THAI_MONTH_NAMES_SHORT[month];
@@ -61,7 +69,7 @@ export function getFiscalYearInfo(date: Date = new Date()): FiscalYearInfo {
     startMonthName,
     currentMonthName,
     monthIndex: clampedMonths,
-    periodLabel: `ปีงบประมาณ พ.ศ. ${fiscalYearBE} (${startMonthName} - ${currentMonthName}: รวม ${clampedMonths} เดือน)`
+    periodLabel: `ปีงบประมาณ พ.ศ. ${fiscalYearBE} (${startMonthName} 2569 - ก.ย. 2570)`
   };
 }
 

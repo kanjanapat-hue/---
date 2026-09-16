@@ -23,6 +23,7 @@ interface AdminStockInViewProps {
   onAddStockIn: (record: StockInRecord) => void;
   onEditStockIn?: (record: StockInRecord) => void;
   onDeleteStockIn?: (recordId: string) => void;
+  onClearAllStockIn?: () => void;
   onReceiveAll20?: () => void;
   onResetAllStockToZero?: () => void;
 }
@@ -35,6 +36,7 @@ export const AdminStockInView: React.FC<AdminStockInViewProps> = ({
   onAddStockIn,
   onEditStockIn,
   onDeleteStockIn,
+  onClearAllStockIn,
   onReceiveAll20,
   onResetAllStockToZero,
 }) => {
@@ -54,7 +56,7 @@ export const AdminStockInView: React.FC<AdminStockInViewProps> = ({
 
   // Form State
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-  const [docNo, setDocNo] = useState(`PO-COPAG-2569/${String(stockIns.length + 1).padStart(3, '0')}`);
+  const [docNo, setDocNo] = useState(`PO-COPAG-2570/${String(stockIns.length + 1).padStart(3, '0')}`);
   const [selectedMaterialId, setSelectedMaterialId] = useState('');
   const [quantity, setQuantity] = useState<number>(10);
   const [unitPrice, setUnitPrice] = useState<number>(0);
@@ -209,6 +211,28 @@ export const AdminStockInView: React.FC<AdminStockInViewProps> = ({
             >
               <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
               ลบจำนวนคงเหลือเป็น 0 ทุกรายการ
+            </button>
+          )}
+
+          {onClearAllStockIn && stockIns.length > 0 && (
+            <button
+              id="btn-stockin-clear-all"
+              onClick={() => {
+                setConfirmModalConfig({
+                  title: 'ยืนยันการลบรายการรับเข้าพัสดุทั้งหมด',
+                  message: 'คุณต้องการลบรายการรับเข้าพัสดุทั้งหมดในหน้านี้ใช่หรือไม่?',
+                  details: `รายการรับเข้าพัสดุทั้งหมดจำนวน ${stockIns.length} ล็อต จะถูกลบออกจากฐานข้อมูลอย่างถาวร เพื่อเริ่มต้นบันทึกรับเข้าใหม่สำหรับปีงบประมาณ 2570`,
+                  confirmText: 'ยืนยันลบรายการทั้งหมด',
+                  variant: 'danger',
+                  icon: 'delete',
+                  onConfirm: () => onClearAllStockIn()
+                });
+              }}
+              className="inline-flex items-center gap-2 px-3 py-2 bg-rose-100 hover:bg-rose-200 border border-rose-300 text-rose-800 text-xs font-bold rounded-xl shadow-2xs transition-colors cursor-pointer"
+              title="ลบประวัติรายการรับเข้าพัสดุทั้งหมด"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-700" />
+              ลบรายการรับเข้าทั้งหมด ({stockIns.length})
             </button>
           )}
 

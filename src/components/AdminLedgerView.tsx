@@ -134,7 +134,7 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
   }, [materials, selectedMaterialId]);
 
   // Quick Date Range Presets
-  const handleApplyPreset = (preset: 'all' | 'this_month' | 'last_month' | 'fiscal_2569' | 'last_7_days' | 'last_30_days') => {
+  const handleApplyPreset = (preset: 'all' | 'this_month' | 'last_month' | 'fiscal_2570' | 'fiscal_2569' | 'last_7_days' | 'last_30_days') => {
     const today = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
     const toIso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -157,6 +157,10 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
       const lastDay = new Date(yr, m, 0);
       setStartDate(toIso(firstDay));
       setEndDate(toIso(lastDay));
+    } else if (preset === 'fiscal_2570') {
+      // Fiscal year 2570: 1 Oct 2026 to 30 Sep 2027
+      setStartDate('2026-10-01');
+      setEndDate('2027-09-30');
     } else if (preset === 'fiscal_2569') {
       // Fiscal year 2569: 1 Oct 2025 to 30 Sep 2026
       setStartDate('2025-10-01');
@@ -217,8 +221,34 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
       ...outs.map(o => ({ type: 'OUT' as const, data: o }))
     ];
 
-    // Sort chronologically by date
-    allEvents.sort((a, b) => new Date(a.data.date).getTime() - new Date(b.data.date).getTime());
+    // Helper to extract numeric creation timestamp from ID or date
+    const getEventTimestamp = (id: string, dateStr: string) => {
+      const match = id.match(/\b(\d{10,13})\b/);
+      if (match) {
+        return Number(match[1]);
+      }
+      return new Date(dateStr).getTime();
+    };
+
+    // Sort chronologically by date and sequence (IN comes before OUT on same date/time)
+    allEvents.sort((a, b) => {
+      // 1. Date comparison (YYYY-MM-DD)
+      if (a.data.date !== b.data.date) {
+        return a.data.date.localeCompare(b.data.date);
+      }
+      // 2. Same date: Compare creation timestamp if available in ID
+      const tA = getEventTimestamp(a.data.id, a.data.date);
+      const tB = getEventTimestamp(b.data.id, b.data.date);
+      if (tA !== tB) {
+        return tA - tB;
+      }
+      // 3. Same date and timestamp: IN (รับเข้า) comes before OUT (เบิกจ่าย) so stock is available
+      if (a.type !== b.type) {
+        return a.type === 'IN' ? -1 : 1;
+      }
+      // 4. Stable tie-breaker
+      return a.data.id.localeCompare(b.data.id);
+    });
 
     // 1. Separate prior events (before startDate) from in-range events
     const priorEvents: RawEvent[] = [];
@@ -233,7 +263,7 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
       }
     });
 
-    // 2. Calculate Opening Balance before startDate
+    // 2. Calculate Opening Balance before startDate (allow negative)
     let priorInQty = 0;
     let priorInAmount = 0;
     let priorOutQty = 0;
@@ -249,8 +279,8 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
       }
     });
 
-    const openingQty = Math.max(0, priorInQty - priorOutQty);
-    const openingAmount = Math.max(0, priorInAmount - priorOutAmount);
+    const openingQty = priorInQty - priorOutQty;
+    const openingAmount = priorInAmount - priorOutAmount;
 
     let runningQty = openingQty;
     let runningAmount = openingAmount;
@@ -265,7 +295,7 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
       type: 'BEGIN',
       description: startDate
         ? `ยอดยกมาก่อนวันที่ ${formatThaiDate(startDate)}`
-        : 'ยอดยกมา (ต้นปีงบประมาณ 2569)',
+        : 'ยอดยกมา (ต้นปีงบประมาณ 2570)',
       operator: 'ระบบพัสดุกลาง',
       unitPrice: selectedMaterial.unitPrice,
       inQty: 0,
@@ -311,8 +341,9 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
         });
       } else {
         const item = evt.data;
-        runningQty = Math.max(0, runningQty - item.quantity);
-        runningAmount = Math.max(0, runningAmount - item.totalPrice);
+        // Allows negative running balance as explicitly requested
+        runningQty = runningQty - item.quantity;
+        runningAmount = runningAmount - item.totalPrice;
         periodOutQty += item.quantity;
         periodOutAmount += item.totalPrice;
 
@@ -361,7 +392,7 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
       const priorOuts = startDate ? allOuts.filter(o => o.date < startDate) : [];
       const priorInQty = priorIns.reduce((s, i) => s + i.quantity, 0);
       const priorOutQty = priorOuts.reduce((s, o) => s + o.quantity, 0);
-      const openingStock = Math.max(0, priorInQty - priorOutQty);
+      const openingStock = priorInQty - priorOutQty;
 
       // In-range movements
       const ins = allIns.filter(
@@ -376,8 +407,8 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
       const totalOutQty = outs.reduce((sum, o) => sum + o.quantity, 0);
       const totalOutCost = outs.reduce((sum, o) => sum + o.totalPrice, 0);
 
-      // Current stock at end of the filtered range
-      const endPeriodStock = Math.max(0, openingStock + totalInQty - totalOutQty);
+      // Current stock at end of the filtered range (allows negative balance)
+      const endPeriodStock = openingStock + totalInQty - totalOutQty;
       const currentValuation = endPeriodStock * mat.unitPrice;
       const movementCount = ins.length + outs.length;
 
@@ -549,7 +580,7 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <span className="text-xs font-semibold px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-mono">
-                COPAG-LEDGER-2569
+                COPAG-LEDGER-2570
               </span>
               <span className="text-xs text-slate-500">
                 วิทยาลัยการเมืองการปกครอง มหาวิทยาลัยมหาสารคาม
@@ -720,6 +751,13 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
               className="px-2 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer"
             >
               เดือนที่แล้ว
+            </button>
+            <button
+              type="button"
+              onClick={() => handleApplyPreset('fiscal_2570')}
+              className="px-2 py-1 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-800 font-medium transition-all cursor-pointer"
+            >
+              ปีงบ 2570
             </button>
             <button
               type="button"
@@ -921,7 +959,7 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
                 วิทยาลัยการเมืองการปกครอง มหาวิทยาลัยมหาสารคาม
               </p>
               <p className="text-[11px] text-slate-500">
-                ประจำปีงบประมาณ พ.ศ. 2569 (ฝ่ายบริหารงานทั่วไปและงานการเงินพัสดุ)
+                ประจำปีงบประมาณ พ.ศ. 2570 (ฝ่ายบริหารงานทั่วไปและงานการเงินพัสดุ)
               </p>
               {startDate || endDate ? (
                 <div className="inline-block mt-1 px-3 py-0.5 rounded-full bg-amber-50 text-amber-900 border border-amber-200 text-xs font-medium">
@@ -1114,11 +1152,23 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
                             : '-'}
                         </td>
 
-                        {/* Running Balance */}
-                        <td className="py-2 px-2 text-center border-r border-slate-200 font-mono font-bold text-blue-900 bg-blue-50/30">
+                        {/* Running Balance (clearly highlights negative if disbursed exceeds stock) */}
+                        <td
+                          className={`py-2 px-2 text-center border-r border-slate-200 font-mono font-bold ${
+                            entry.balanceQty < 0
+                              ? 'text-rose-600 bg-rose-50/70 font-black'
+                              : 'text-blue-900 bg-blue-50/30'
+                          }`}
+                        >
                           {entry.balanceQty}
                         </td>
-                        <td className="py-2 px-2 text-right border-r border-slate-200 font-mono font-bold text-blue-900 bg-blue-50/30">
+                        <td
+                          className={`py-2 px-2 text-right border-r border-slate-200 font-mono font-bold ${
+                            entry.balanceAmount < 0
+                              ? 'text-rose-600 bg-rose-50/70 font-black'
+                              : 'text-blue-900 bg-blue-50/30'
+                          }`}
+                        >
                           {entry.balanceAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
                         </td>
 
@@ -1148,11 +1198,23 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
                     <td className="py-2.5 px-2 text-right border-r border-slate-300 font-mono text-amber-800">
                       ฿{ledgerCalculation.periodOutAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
                     </td>
-                    <td className="py-2.5 px-2 text-center border-r border-slate-300 font-mono text-blue-900 bg-blue-100/50">
+                    <td
+                      className={`py-2.5 px-2 text-center border-r border-slate-300 font-mono font-bold ${
+                        ledgerCalculation.closingQty < 0
+                          ? 'text-rose-700 bg-rose-100/80 font-black'
+                          : 'text-blue-900 bg-blue-100/50'
+                      }`}
+                    >
                       {ledgerCalculation.closingQty}
                     </td>
-                    <td className="py-2.5 px-2 text-right border-r border-slate-300 font-mono text-blue-900 bg-blue-100/50">
-                      ฿{ledgerCalculation.closingAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                    <td
+                      className={`py-2.5 px-2 text-right border-r border-slate-300 font-mono font-bold ${
+                        ledgerCalculation.closingAmount < 0
+                          ? 'text-rose-700 bg-rose-100/80 font-black'
+                          : 'text-blue-900 bg-blue-100/50'
+                      }`}
+                    >
+                      {ledgerCalculation.closingAmount < 0 ? '-' : ''}฿{Math.abs(ledgerCalculation.closingAmount).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
                     </td>
                     <td className="py-2.5 px-3 text-[11px] text-slate-500">
                       {startDate || endDate ? 'ยอดคงเหลือปลายงวด' : 'ยอดคงเหลือปัจจุบัน'}
@@ -1325,11 +1387,23 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
                           {item.totalOutCost.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
                         </td>
 
-                        {/* Current Stock */}
-                        <td className="py-2 px-2.5 text-center font-mono font-bold text-blue-900 bg-blue-50/30">
+                        {/* Current Stock (allow and highlight negative) */}
+                        <td
+                          className={`py-2 px-2.5 text-center font-mono font-bold ${
+                            item.currentStock < 0
+                              ? 'text-rose-600 bg-rose-50/70 font-black'
+                              : 'text-blue-900 bg-blue-50/30'
+                          }`}
+                        >
                           {item.currentStock}
                         </td>
-                        <td className="py-2 px-2.5 text-right font-mono font-bold text-blue-900 bg-blue-50/30">
+                        <td
+                          className={`py-2 px-2.5 text-right font-mono font-bold ${
+                            item.currentValuation < 0
+                              ? 'text-rose-600 bg-rose-50/70 font-black'
+                              : 'text-blue-900 bg-blue-50/30'
+                          }`}
+                        >
                           {item.currentValuation.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
                         </td>
 
@@ -1382,11 +1456,23 @@ export const AdminLedgerView: React.FC<AdminLedgerViewProps> = ({
                         minimumFractionDigits: 2
                       })}
                     </td>
-                    <td className="py-3 px-2.5 text-center font-mono text-blue-900 bg-blue-100/50">
+                    <td
+                      className={`py-3 px-2.5 text-center font-mono font-bold ${
+                        filteredSummary.reduce((s, it) => s + it.currentStock, 0) < 0
+                          ? 'text-rose-700 bg-rose-100/80 font-black'
+                          : 'text-blue-900 bg-blue-100/50'
+                      }`}
+                    >
                       {filteredSummary.reduce((s, it) => s + it.currentStock, 0)}
                     </td>
-                    <td className="py-3 px-2.5 text-right font-mono text-blue-900 bg-blue-100/50">
-                      ฿{filteredSummary.reduce((s, it) => s + it.currentValuation, 0).toLocaleString('th-TH', {
+                    <td
+                      className={`py-3 px-2.5 text-right font-mono font-bold ${
+                        filteredSummary.reduce((s, it) => s + it.currentValuation, 0) < 0
+                          ? 'text-rose-700 bg-rose-100/80 font-black'
+                          : 'text-blue-900 bg-blue-100/50'
+                      }`}
+                    >
+                      {filteredSummary.reduce((s, it) => s + it.currentValuation, 0) < 0 ? '-' : ''}฿{Math.abs(filteredSummary.reduce((s, it) => s + it.currentValuation, 0)).toLocaleString('th-TH', {
                         minimumFractionDigits: 2
                       })}
                     </td>

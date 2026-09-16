@@ -83,7 +83,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           </button>
           <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-white px-3 py-1.5 rounded-lg border border-slate-200">
             <Calendar className="w-3.5 h-3.5 text-amber-600" />
-            ปีงบประมาณ 2569
+            ปีงบประมาณ 2570
           </div>
         </div>
       </div>

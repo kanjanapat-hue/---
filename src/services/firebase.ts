@@ -227,6 +227,24 @@ export async function deleteStockInFromFirestore(recordId: string): Promise<void
   }
 }
 
+export async function clearAllStockInsFromFirestore(): Promise<void> {
+  try {
+    const snap = await getDocs(collection(db, STOCK_IN_COLLECTION));
+    if (snap.empty) return;
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 400) {
+      const chunk = docs.slice(i, i + 400);
+      const batch = writeBatch(db);
+      chunk.forEach(d => {
+        batch.delete(doc(db, STOCK_IN_COLLECTION, d.id));
+      });
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, STOCK_IN_COLLECTION);
+  }
+}
+
 // -------------------------------------------------------------
 // Stock Out Records Collection
 // -------------------------------------------------------------
@@ -285,40 +303,61 @@ export async function seedInitialFirestoreData(
 ): Promise<boolean> {
   try {
     const matSnap = await getDocs(collection(db, MATERIALS_COLLECTION));
-    if (!matSnap.empty) {
-      // Already populated
-      return false;
+    const existingDocIds = new Set(matSnap.docs.map(d => d.id));
+
+    // Seed Materials if collection is completely empty
+    if (matSnap.empty && initialMaterials.length > 0) {
+      console.log(`Seeding initial ${initialMaterials.length} materials to Firestore...`);
+      for (let i = 0; i < initialMaterials.length; i += 400) {
+        const chunk = initialMaterials.slice(i, i + 400);
+        const batch = writeBatch(db);
+        for (const mat of chunk) {
+          const ref = doc(db, MATERIALS_COLLECTION, mat.id);
+          batch.set(ref, mat);
+        }
+        await batch.commit();
+      }
+      console.log(`Successfully seeded materials to Firestore.`);
     }
 
-    console.log('Seeding initial data into Firestore...');
-    const batch = writeBatch(db);
-
-    // Seed Materials
-    for (const mat of initialMaterials) {
-      const ref = doc(db, MATERIALS_COLLECTION, mat.id);
-      batch.set(ref, mat);
+    // Check Orders
+    const ordSnap = await getDocs(collection(db, ORDERS_COLLECTION));
+    if (ordSnap.empty && initialOrders.length > 0) {
+      const batch = writeBatch(db);
+      for (const ord of initialOrders) {
+        const ref = doc(db, ORDERS_COLLECTION, ord.id);
+        batch.set(ref, ord);
+      }
+      await batch.commit();
     }
 
-    // Seed Orders
-    for (const ord of initialOrders) {
-      const ref = doc(db, ORDERS_COLLECTION, ord.id);
-      batch.set(ref, ord);
+    // Check Stock In (only seed if initialStockIns has records and collection is empty)
+    if (initialStockIns.length > 0) {
+      const inSnap = await getDocs(collection(db, STOCK_IN_COLLECTION));
+      if (inSnap.empty) {
+        for (let i = 0; i < initialStockIns.length; i += 400) {
+          const chunk = initialStockIns.slice(i, i + 400);
+          const batch = writeBatch(db);
+          for (const inRec of chunk) {
+            const ref = doc(db, STOCK_IN_COLLECTION, inRec.id);
+            batch.set(ref, inRec);
+          }
+          await batch.commit();
+        }
+      }
     }
 
-    // Seed Stock Ins
-    for (const inRec of initialStockIns) {
-      const ref = doc(db, STOCK_IN_COLLECTION, inRec.id);
-      batch.set(ref, inRec);
+    // Check Stock Out
+    const outSnap = await getDocs(collection(db, STOCK_OUT_COLLECTION));
+    if (outSnap.empty && initialStockOuts.length > 0) {
+      const batch = writeBatch(db);
+      for (const outRec of initialStockOuts) {
+        const ref = doc(db, STOCK_OUT_COLLECTION, outRec.id);
+        batch.set(ref, outRec);
+      }
+      await batch.commit();
     }
 
-    // Seed Stock Outs
-    for (const outRec of initialStockOuts) {
-      const ref = doc(db, STOCK_OUT_COLLECTION, outRec.id);
-      batch.set(ref, outRec);
-    }
-
-    await batch.commit();
-    console.log('Firestore initial data seeded successfully!');
     return true;
   } catch (error) {
     console.warn('Could not seed initial data to Firestore:', error);

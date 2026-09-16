@@ -17,7 +17,8 @@ import {
   PackageCheck,
   Filter,
   FileEdit,
-  RotateCcw
+  RotateCcw,
+  Trash2
 } from 'lucide-react';
 
 interface AdminRequisitionsViewProps {
@@ -48,6 +49,7 @@ interface AdminRequisitionsViewProps {
     totalAmount: number;
   }) => void;
   onCancelDisbursement?: (orderId: string) => void;
+  onDeleteOrder?: (orderId: string) => void;
 }
 
 export const AdminRequisitionsView: React.FC<AdminRequisitionsViewProps> = ({
@@ -59,12 +61,14 @@ export const AdminRequisitionsView: React.FC<AdminRequisitionsViewProps> = ({
   onViewPrintForm,
   onEditOrder,
   onCancelDisbursement,
+  onDeleteOrder,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('รออนุมัติ'); // Default to pending to highlight actionable orders
   const [selectedOrder, setSelectedOrder] = useState<RequisitionOrder | null>(null);
   const [editingOrder, setEditingOrder] = useState<RequisitionOrder | null>(null);
   const [confirmCancelOrder, setConfirmCancelOrder] = useState<RequisitionOrder | null>(null);
+  const [confirmDeleteOrder, setConfirmDeleteOrder] = useState<RequisitionOrder | null>(null);
   const [approvedQuantities, setApprovedQuantities] = useState<Record<string, number>>({});
   const [approverNote, setApproverNote] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -484,6 +488,18 @@ export const AdminRequisitionsView: React.FC<AdminRequisitionsViewProps> = ({
                             ยกเลิกการเบิก (คืนสต็อก)
                           </button>
                         )}
+
+                        {onDeleteOrder && (
+                          <button
+                            id={`btn-delete-order-${order.id}`}
+                            onClick={() => setConfirmDeleteOrder(order)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-xs font-semibold rounded-xl shadow-2xs transition-colors cursor-pointer"
+                            title="ลบใบขอเบิกนี้ออกจากระบบ"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                            ลบใบขอเบิก
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -777,6 +793,21 @@ export const AdminRequisitionsView: React.FC<AdminRequisitionsViewProps> = ({
               </button>
 
               <div className="flex items-center gap-2">
+                {onDeleteOrder && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const ord = selectedOrder;
+                      setSelectedOrder(null);
+                      setConfirmDeleteOrder(ord);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer mr-2"
+                  >
+                    <Trash2 className="w-4 h-4 text-rose-600" />
+                    ลบใบขอเบิกนี้
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => setSelectedOrder(null)}
@@ -861,6 +892,27 @@ export const AdminRequisitionsView: React.FC<AdminRequisitionsViewProps> = ({
             setConfirmCancelOrder(null);
           }}
           onClose={() => setConfirmCancelOrder(null)}
+        />
+      )}
+
+      {/* Confirm Delete Order Modal */}
+      {confirmDeleteOrder && onDeleteOrder && (
+        <ConfirmModal
+          isOpen={true}
+          title="ยืนยันการลบใบขอเบิกพัสดุ"
+          message={`ต้องการลบใบขอเบิกเลขที่ ${confirmDeleteOrder.docNo} ออกจากระบบใช่หรือไม่?`}
+          details={`• ผู้ขอเบิก: ${confirmDeleteOrder.requesterName} (${confirmDeleteOrder.department})\n• วัตถุประสงค์: ${confirmDeleteOrder.purpose}\n• รายการพัสดุ: ${confirmDeleteOrder.items.length} รายการ (มูลค่ารวม ฿${confirmDeleteOrder.totalAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })})\n• สถานะปัจจุบัน: ${confirmDeleteOrder.status}\n${confirmDeleteOrder.status === 'เบิกจ่ายแล้ว' || confirmDeleteOrder.status === 'อนุมัติแล้ว' ? '• หมายเหตุ: เนื่องจากใบเบิกนี้เบิกจ่ายแล้ว ระบบจะคืนยอดพัสดุกลับเข้าคลังให้โดยอัตโนมัติ' : '• การกระทำนี้จะลบใบขอเบิกออกจากฐานข้อมูลอย่างถาวร'}`}
+          confirmText="ยืนยันลบใบขอเบิก"
+          variant="danger"
+          icon="delete"
+          onConfirm={() => {
+            onDeleteOrder(confirmDeleteOrder.id);
+            if (selectedOrder && selectedOrder.id === confirmDeleteOrder.id) {
+              setSelectedOrder(null);
+            }
+            setConfirmDeleteOrder(null);
+          }}
+          onClose={() => setConfirmDeleteOrder(null)}
         />
       )}
     </div>
